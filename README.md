@@ -1,3 +1,10 @@
+# Get started
+```console
+make
+./myc examples/retval
+cat output.asm
+```
+
 # Grammar
 
 ```console
