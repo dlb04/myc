@@ -167,7 +167,7 @@ Token *lexer_next_token(Lexer *lexer) {
 		__attribute__ ((fallthrough));
 		case '0': case '1': case '2': case '3': case '4':
 		case '5': case '6': case '7': case '8': case '9': {
-			size_t len = 1;
+			size_t len = 0;
 			while (can_read(lexer) && isdigit(c)) {
 				len++;
 				adv(lexer);
