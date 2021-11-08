@@ -14,6 +14,16 @@
 
 extern size_t filesz(FILE *);
 
+inline static char *pos(Lexer *);
+inline static char chr(Lexer *);
+inline static bool can_read(Lexer *);
+inline static bool can_peek(Lexer *, size_t);
+inline static bool peek(Lexer *, size_t);
+inline static void adv(Lexer *);
+static Token *token(const char *, size_t, TokenType, TokenMetadata*);
+static TokenType iden_or_keyword(const char *, size_t);
+static inline void adv_line(Lexer *);
+
 inline static char *pos(Lexer *l) {
 	return l->src + l->pos;
 }
@@ -38,6 +48,12 @@ inline static bool peek(Lexer *l, size_t offset) {
 inline static void adv(Lexer *l) {
 	l->col++;
 	l->pos++;
+}
+
+static inline void adv_line(Lexer *l) {
+	l->pos++;
+	l->row++;
+	l->col = 0;
 }
 
 static Token *token(const char *repr, size_t len,
@@ -72,6 +88,19 @@ static TokenType iden_or_keyword(const char *start, size_t len) {
 	return TK_IDN;
 }
 
+static void skip_blanks(Lexer *lexer) {
+	char c;
+	while (can_read(lexer)) {
+		c = chr(lexer);
+		if (isblank(c))
+			adv(lexer);
+		else if (c == '\n')
+			adv_line(lexer);
+		else
+			break;
+	}
+}
+
 Lexer *lexer_from_file(FILE *input, const char* filepath) {
 
 	Lexer *lexer = malloc(sizeof(*lexer));
@@ -96,93 +125,86 @@ Lexer *lexer_from_file(FILE *input, const char* filepath) {
 	return lexer;
 }
 
-static inline void adv_line(Lexer *l) {
-	l->row++;
-	l->col = 0;
-}
-
 Token *lexer_next_token(Lexer *lexer) {
-	const char *repr = NULL;
-	size_t len = 0;
-	TokenType type = 0;
-
 	TokenMetadata metadata = {
 		.filepath = lexer->filepath,
 	};
 
-	for (; can_read(lexer); adv(lexer)) {
+	skip_blanks(lexer);
+
+	/* end of file */
+	if (!can_read(lexer)) {
 		metadata.row = lexer->row;
-		metadata.col = lexer->col;
+		return token(NULL, 0, TK_EOF, &metadata);
+	}
 
-		repr = pos(lexer);
+	/* now the lexer points to a valid character */
+	char c = chr(lexer);
+	metadata.row = lexer->row;
+	metadata.col = lexer->col;
+	const char *repr = pos(lexer);
+	/**
+	 * Tokens whose type can be known by just looking at the current character
+	 */
+	switch (c) {
+		case ';':
+			adv(lexer);
+			return token(repr, 1, TK_SEMICOLON, &metadata);
 
-		const int c = chr(lexer);
+		case '(': case ')':
+			adv(lexer);
+			return token(repr, 1, TK_LPAREN + (c == ')'), &metadata);
 
-		/**
-		 * Tokens whose type can be known by just looking at the current
-		 * character
-		 */
-		switch (c) {
-			case '\n':
-				adv_line(lexer);
-			case ' ': case '\t':
-				continue;
+		case '}': case '{':
+			adv(lexer);
+			return token(repr, 1, TK_LBRACKET + (c == '}'), &metadata);
 
-			case ';':
-				type = TK_SEMICOLON;
-				len = 1;
+		case '-':
+			// Handle negative integers
+			if (!can_peek(lexer, 1) || !isdigit(peek(lexer, 1)))
+				errx(1, "expected integer, but only found `-`");
+
+		__attribute__ ((fallthrough));
+		case '0': case '1': case '2': case '3': case '4':
+		case '5': case '6': case '7': case '8': case '9': {
+			size_t len = 1;
+			while (can_read(lexer) && isdigit(c)) {
+				len++;
 				adv(lexer);
-				goto valid_token;
-
-			case '(': case ')':
-				type = TK_LPAREN + (c == ')');
-				len = 1;
-				adv(lexer);
-				goto valid_token;
-
-			case '}': case '{':
-				type = TK_LBRACKET + (c == '}');
-				len = 1;
-				adv(lexer);
-				goto valid_token;
-
-			case '-':
-				// Handle negative integers
-				if (!can_peek(lexer, 1) || !isdigit(peek(lexer, 1)))
-					errx(1, "expected integer, but only found `-`");
-
-			__attribute__ ((fallthrough));
-			case '0': case '1': case '2': case '3': case '4':
-			case '5': case '6': case '7': case '8': case '9':
-				// TODO: support multidigit integers.
-				type = TK_INT;
-				len = 1;
-				adv(lexer);
-				goto valid_token;
-
-			default: 
-				break;
+				c = chr(lexer);
+			}
+			return token(repr, len, TK_INT, &metadata);
 		}
+		default:
+			break;
+	}
 
-		/* Handle identifiers or keywords */
-		while (chr(lexer) == '_' || isalpha(chr(lexer))) {
+	/**
+	 * Identifiers and keywords
+	 *
+	 * Since all digits were handled at the switch stmt, isalnum() can be used 
+	 * here without worrying about lexing a number as if it were an identifier.
+	 */
+	if (isalnum(c) || c == '_') {
+		size_t len = 0;
+		while (can_read(lexer) && (isalnum( (c = chr(lexer)) ) || c == '_')) {
 			len++;
 			adv(lexer);
 		}
-
-		if (len != 0) {
-			type = iden_or_keyword(repr, len);
-			goto valid_token;
-		}
-
-		errx(1, "invalid character `%c`", c);
+		TokenType type = iden_or_keyword(repr, len);
+		return token(repr, len, type, &metadata);
 	}
+	
+	/**
+	 * Invalid tokens
+	 */
+	errx(1, "%s:%zu:%zu: invalid token `%c`",
+			metadata.filepath,
+			metadata.row,
+			metadata.col,
+			c);
 
-	/* End of file */
-	return token(NULL, 0, TK_EOF, NULL);
-
-valid_token:
-	return token(repr, len, type, &metadata);
+	return NULL;
 }
 
 /**
